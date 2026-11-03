@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ask-ai-cli"
+version = "0.1.0"
+description = "Ask any LLM from your terminal, with persistent provider profiles"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+ask-ai = "ask_ai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ask_ai*"]

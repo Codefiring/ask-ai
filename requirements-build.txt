@@ -1,0 +1,2 @@
+# Build tooling only; end users of the executable do not need Python or pip.
+PyInstaller==6.22.3
