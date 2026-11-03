@@ -107,6 +107,8 @@ ask-ai config add gateway --provider custom \
 
 ```sh
 ask-ai "用中文解释 pingpong"
+ask-ai --think "分析这个复杂问题"       # 开启思考
+ask-ai -r high "推导并检查这个结论"     # 选择思考强度
 ask-ai -p local "写一个 Python 快排"
 ask-ai -m another-model "解释这段代码"
 ask-ai --system "用中文简洁回答" "What is DNS?"
@@ -120,6 +122,29 @@ ask-ai -- "config"  # 对保留的子命令名称提问
 问题与管道输入同时存在时，管道内容附加到问题后。正常输出只包含答案，错误写入 stderr；`--json` 输出原始 API 响应。每次请求独立，不保存对话历史；当前版本一次性输出完整结果，不提供流式输出。
 
 `--temperature` 仅在显式指定时发送，以兼容不支持调整温度的模型。`--max-tokens` 对 OpenAI 映射为 `max_completion_tokens`，对其他兼容节点映射为 `max_tokens`，Claude 默认上限为 4096，Gemini 使用 `maxOutputTokens`。具体参数支持范围取决于模型。
+
+### 思考模式
+
+默认 `--reasoning-effort none`，请求关闭思考以减少推理耗时。需要时用 `--think` 开启（等价于 `-r medium`），或用 `-r low|medium|high` 选择强度。这些选项仅影响本次请求，不修改已保存配置，`--think` 与 `-r` 不能同时使用。
+
+| 服务 | 默认关闭 | 开启/强度 |
+| --- | --- | --- |
+| OpenAI、Ollama、Groq、自定义兼容节点 | `reasoning_effort: none` | `reasoning_effort: low/medium/high` |
+| vLLM | `chat_template_kwargs.enable_thinking: false` | 模板开关为 true，并发送 `reasoning_effort` |
+| DeepSeek | `thinking.type: disabled` | `enabled`；本客户端在此仅映射开关，三个强度都开启思考 |
+| Qwen | `enable_thinking: false` | 开启并设置 1024/4096/8192 token 思考预算 |
+| OpenRouter | `reasoning.enabled: false` | 开启并发送 `reasoning.effort` |
+| Claude | `thinking.type: disabled` | 新模型使用 adaptive + effort；旧模型使用 1024/4096/8192 token 预算 |
+| Gemini 2.5 | `thinkingBudget: 0` | 1024/4096/8192 token 预算 |
+| Gemini 3 | 不支持关闭，提示显式开启 | `thinkingLevel`；3 Pro 的 medium 映射为 low（该模型仅支持 low/high） |
+
+已识别的普通非推理模型（例如 GPT-4o、GPT-4.1、Gemini 2.0）不发送思考参数。Gemini 2.5 Pro 同样不能关闭思考。其他强制推理模型可能拒绝默认关闭参数，需显式开启或更换模型。vLLM 的开关取决于服务端模型的 chat template 是否支持，强度也由模型决定。
+
+旧网关或不支持这些参数的节点可用 `--reasoning-effort auto`，完全不发送思考控制参数，采用服务端默认行为（可能开启思考）。程序不会在报错后自动去掉关闭参数重试，也不会把隐藏思考文本当作关闭思考。响应耗时仍取决于模型、网络、输出长度和节点负载，不能保证固定时延。
+
+Claude 旧模型开启思考后，默认总输出上限为思考预算加 4096；手动指定 `--max-tokens` 时必须大于思考预算。各服务对 `--temperature`、预算和强度的支持范围不同。
+
+映射参考 [OpenAI reasoning](https://developers.openai.com/api/docs/guides/reasoning)、[vLLM reasoning](https://docs.vllm.ai/en/stable/features/reasoning_outputs/)、[DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Claude thinking](https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking) 和 [Gemini thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking)。
 
 ## 配置管理
 

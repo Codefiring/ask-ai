@@ -6,6 +6,8 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .config import PRESETS, UserError, api_key, validate_profile
+from .reasoning import apply_reasoning
+from . import __version__
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -14,12 +16,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def make_request(profile, prompt, system=None, max_tokens=None, temperature=None):
+def make_request(profile, prompt, system=None, max_tokens=None, temperature=None, reasoning_effort="none"):
     validate_profile(profile)
     protocol = PRESETS[profile["provider"]][0]
     root = profile["base_url"].rstrip("/")
     key = api_key(profile)
-    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "ask-ai/0.1.0"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": f"ask-ai/{__version__}"}
     model = profile["model"]
     system = profile.get("system", "") if system is None else system
     if protocol == "anthropic":
@@ -57,6 +59,7 @@ def make_request(profile, prompt, system=None, max_tokens=None, temperature=None
             body["max_completion_tokens" if profile["provider"] == "openai" else "max_tokens"] = max_tokens
         if temperature is not None:
             body["temperature"] = temperature
+    apply_reasoning(body, profile, reasoning_effort, max_tokens)
     return Request(url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers=headers), protocol
 
 
@@ -86,7 +89,10 @@ def ask(profile, prompt, timeout=120, **options):
     except HTTPError as exc:
         # Server error bodies may echo credentials or prompts; never print them.
         hints = {401: "认证失败，请检查 API Key", 403: "访问被拒绝，请检查权限", 404: "接口或模型不存在，请检查 API 根地址和模型名", 429: "请求限流或额度不足", 400: "请求参数不被模型支持，请检查模型及可选参数"}
-        raise UserError(f"HTTP {exc.code}：{hints.get(exc.code, '服务请求失败，请检查节点状态和地址')}。") from exc
+        hint = hints.get(exc.code, '服务请求失败，请检查节点状态和地址')
+        if exc.code == 400:
+            hint += "；若模型不能关闭思考，可用 --think；若节点不支持思考参数，可用 --reasoning-effort auto（采用服务端默认，可能开启思考）"
+        raise UserError(f"HTTP {exc.code}：{hint}。") from exc
     except (TimeoutError, socket.timeout) as exc:
         raise UserError("请求超时，可通过 --timeout 增加等待时间。") from exc
     except URLError as exc:

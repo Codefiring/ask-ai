@@ -7,6 +7,7 @@ import sys
 
 from . import __version__
 from .client import ask
+from .reasoning import EFFORTS
 from .config import PRESETS, UserError, config_path, get_profile, load_config, save_config, validate_profile
 
 
@@ -144,6 +145,10 @@ def run(argv=None):
     parser.add_argument("--timeout", type=positive_float, default=120, help="网络读写超时秒数，默认 120")
     parser.add_argument("--max-tokens", type=positive_int, help="输出 token 上限，必须受模型支持")
     parser.add_argument("--temperature", type=temperature_value, help="采样温度，仅在指定时发送")
+    reasoning = parser.add_mutually_exclusive_group()
+    reasoning.add_argument("--think", action="store_const", const="medium", dest="reasoning_effort", help="开启思考（medium 强度）")
+    reasoning.add_argument("-r", "--reasoning-effort", choices=EFFORTS, help="思考强度，默认 none 关闭；auto 使用服务端默认")
+    parser.set_defaults(reasoning_effort="none")
     parser.add_argument("--json", action="store_true", help="输出 API 原始 JSON 响应")
     args = parser.parse_args(argv)
     prompt = " ".join(args.prompt).strip()
@@ -157,7 +162,7 @@ def run(argv=None):
     profile = get_profile(load_config(), args.profile)
     if args.model is not None:
         profile["model"] = args.model
-    text, data = ask(profile, prompt, timeout=args.timeout, system=args.system, max_tokens=args.max_tokens, temperature=args.temperature)
+    text, data = ask(profile, prompt, timeout=args.timeout, system=args.system, max_tokens=args.max_tokens, temperature=args.temperature, reasoning_effort=args.reasoning_effort)
     print(json.dumps(data, ensure_ascii=False) if args.json else text)
     return 0
 

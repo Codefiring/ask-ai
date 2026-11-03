@@ -65,9 +65,20 @@ def main():
             assert requests[1][2]["x-api-key"] == "test-key"
             assert requests[2][0] == "/v1/models/test-model:generateContent"
             assert requests[2][2]["x-goog-api-key"] == "test-key"
+            assert requests[0][1]["chat_template_kwargs"]["enable_thinking"] is False
+            assert requests[1][1]["thinking"] == {"type": "disabled"}
+            assert requests[2][1]["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 0
+            run("-p", "vllm", "--think", "reason about this")
+            assert requests[-1][1]["chat_template_kwargs"]["enable_thinking"] is True
+            assert requests[-1][1]["reasoning_effort"] == "medium"
+            run("-p", "vllm", "-r", "high", "reason about this")
+            assert requests[-1][1]["reasoning_effort"] == "high"
+            run("-p", "vllm", "-r", "auto", "hello")
+            assert "reasoning_effort" not in requests[-1][1]
+            assert "chat_template_kwargs" not in requests[-1][1]
             run("-p", "vllm", "summarize", stdin="some context")
             assert requests[-1][1]["messages"][-1]["content"] == "summarize\n\nsome context"
-            print("HTTP smoke passed: installed CLI, persisted profiles, 3 protocols, pipeline input")
+            print("HTTP smoke passed: CLI, persisted profiles, 3 protocols, reasoning controls, pipeline input")
     finally:
         server.shutdown()
         server.server_close()
