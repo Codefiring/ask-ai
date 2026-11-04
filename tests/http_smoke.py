@@ -13,7 +13,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 requests = []
 
 
-def check_terminal(command, env, cwd):
+def is_title(body):
+    return "为这段对话生成简短的会话标题" in json.dumps(body, ensure_ascii=False)
+
+
+def check_terminal(command, env, cwd, resume=False):
     """Exercise readline and prompts against a real pseudo-terminal on POSIX."""
     import pty
     import select
@@ -21,7 +25,8 @@ def check_terminal(command, env, cwd):
     master, slave = pty.openpty()
     process = None
     try:
-        process = subprocess.Popen([command, "chat", "-p", "vllm"], stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env)
+        args = ["resume"] if resume else ["chat", "-p", "vllm"]
+        process = subprocess.Popen([command, *args], stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env)
 
         def expect(marker):
             output = b""
@@ -33,6 +38,9 @@ def check_terminal(command, env, cwd):
                 assert ready, output.decode(errors="replace")
                 output += os.read(master, 65536)
 
+        if resume:
+            expect("选择序号")
+            os.write(master, b"1\n")
         expect("你> ")
         os.write(master, b"first\n")
         expect("你> ")
@@ -56,11 +64,11 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append((self.path, body, self.headers))
         if self.path.endswith("/messages"):
-            response = {"content": [{"type": "text", "text": "你好，Claude"}]}
+            response = {"content": [{"type": "text", "text": "测试会话" if is_title(body) else "你好，Claude"}]}
         elif self.path.endswith(":generateContent"):
-            response = {"candidates": [{"content": {"parts": [{"text": "你好，Gemini"}]}}]}
+            response = {"candidates": [{"content": {"parts": [{"text": "测试会话" if is_title(body) else "你好，Gemini"}]}}]}
         else:
-            response = {"choices": [{"message": {"content": "你好，vLLM"}}]}
+            response = {"choices": [{"message": {"content": "测试会话" if is_title(body) else "你好，vLLM"}}]}
         payload = json.dumps(response).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -80,6 +88,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as temporary:
             env = dict(os.environ, ASK_AI_CONFIG=str(Path(temporary) / "config.json"), NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
+            env["ASK_AI_SESSIONS_DIR"] = str(Path(temporary) / "sessions")
             env.pop("ASK_AI_PROFILE", None)
             if args.binary:
                 # The executable must work without any interpreter on PATH.
@@ -117,15 +126,25 @@ def main():
             for provider in ("vllm", "anthropic", "gemini"):
                 start = len(requests)
                 run("chat", "-p", provider, stdin="first\nfollowup\n/clear\nfresh\n/exit\n")
-                conversation = requests[start:]
+                conversation = [item for item in requests[start:] if not is_title(item[1])]
                 field = "contents" if provider == "gemini" else "messages"
                 assert [len(item[1][field]) for item in conversation] == [1, 3, 1]
                 assert conversation[1][1][field][1]["role"] == ("model" if provider == "gemini" else "assistant")
+                saved = sorted((json.loads(path.read_text()) for path in (Path(temporary) / "sessions").glob("*.json")), key=lambda item: item["updated_at"])[-1]
+                assert saved["title"] == "测试会话"
+                start = len(requests)
+                run("resume", saved["id"], stdin="continue\n/exit\n")
+                assert len(requests) == start + 1  # No repeated title request.
+                assert len(requests[-1][1][field]) == 3
+                assert "测试会话" in run("resume", "--list")
             if os.name == "posix":
                 start = len(requests)
                 check_terminal(command, env, temporary)
-                assert [len(item[1]["messages"]) for item in requests[start:]] == [1, 3]
-            print("HTTP smoke passed: CLI, profiles, 3 protocols, reasoning, pipelines, multi-turn chat, clear and terminal")
+                assert [len(item[1]["messages"]) for item in requests[start:] if not is_title(item[1])] == [1, 3]
+                start = len(requests)
+                check_terminal(command, env, temporary, resume=True)
+                assert [len(item[1]["messages"]) for item in requests[start:]] == [5, 7]
+            print("HTTP smoke passed: 3 protocols, reasoning, chat, persistence, LLM titles, resume and terminal selection")
     finally:
         server.shutdown()
         server.server_close()

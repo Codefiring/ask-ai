@@ -3,11 +3,13 @@ import argparse
 import getpass
 import json
 import math
+import os
 import sys
 
 from . import __version__
 from .client import ask
 from .chat import chat
+from .sessions import choose_session
 from .reasoning import EFFORTS
 from .config import PRESETS, UserError, config_path, get_profile, load_config, save_config, validate_profile
 
@@ -129,10 +131,36 @@ def configure(argv):
     return 0
 
 
+def resume(argv):
+    parser = argparse.ArgumentParser(prog="ask-ai resume", description="选择已保存的会话并继续对话")
+    parser.add_argument("session_id", nargs="?", help="会话 ID 或唯一前缀；省略时显示选择列表")
+    parser.add_argument("--list", action="store_true", help="仅列出会话")
+    parser.add_argument("--json", action="store_true", help="每轮输出原始 JSON")
+    reasoning = parser.add_mutually_exclusive_group()
+    reasoning.add_argument("--think", action="store_const", const="medium", dest="reasoning_effort")
+    reasoning.add_argument("-r", "--reasoning-effort", choices=EFFORTS)
+    args = parser.parse_args(argv)
+    if args.list and args.session_id:
+        parser.error("--list 不能与会话 ID 同时使用")
+    session = choose_session(args.session_id, list_only=args.list)
+    if session is None:
+        return 0
+    profile = get_profile(load_config(), session["profile"])
+    if profile["provider"] != session["provider"] or profile["base_url"] != session["base_url"]:
+        raise UserError("原配置的服务类型或 API 地址已改变，请还原该配置后恢复，或使用 ask-ai chat 开始新会话。")
+    profile["model"] = session["model"]
+    options = session["options"].copy()
+    if args.reasoning_effort is not None:
+        options["reasoning_effort"] = args.reasoning_effort
+    return chat(profile, profile_name=session["profile"], session=session, json_output=args.json, **options)
+
+
 def run(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "config":
         return configure(argv[1:])
+    if argv and argv[0] == "resume":
+        return resume(argv[1:])
     if argv == ["providers"]:
         for name, (protocol, root, env) in PRESETS.items():
             print(f"{name:12} {protocol:10} {root or '<自定义 API 根地址>'}  {env}")
@@ -140,7 +168,7 @@ def run(argv=None):
     chat_mode = bool(argv and argv[0] == "chat")
     if chat_mode:
         argv.pop(0)
-    parser = argparse.ArgumentParser(prog="ask-ai chat" if chat_mode else "ask-ai", description="终端多轮对话，/help 查看会话命令" if chat_mode else '一次配置，直接提问：ask-ai "what is pingpang"', epilog="聊天：ask-ai chat | 配置：ask-ai config | 管理：ask-ai config --help | 服务列表：ask-ai providers")
+    parser = argparse.ArgumentParser(prog="ask-ai chat" if chat_mode else "ask-ai", description="终端多轮对话，自动保存，/help 查看会话命令" if chat_mode else '一次配置，直接提问：ask-ai "what is pingpang"', epilog="聊天：ask-ai chat | 恢复：ask-ai resume | 配置：ask-ai config | 服务列表：ask-ai providers")
     parser.add_argument("prompt", nargs="*", help="问题；也可从标准输入读取")
     parser.add_argument("--version", action="version", version=f"ask-ai {__version__}")
     parser.add_argument("-p", "--profile", help="本次使用的配置名称")
@@ -163,12 +191,14 @@ def run(argv=None):
     if not prompt and not chat_mode:
         parser.print_help()
         return 0
-    profile = get_profile(load_config(), args.profile)
+    config = load_config()
+    profile_name = args.profile or os.environ.get("ASK_AI_PROFILE") or config.get("default")
+    profile = get_profile(config, profile_name)
     if args.model is not None:
         profile["model"] = args.model
     options = dict(timeout=args.timeout, system=args.system, max_tokens=args.max_tokens, temperature=args.temperature, reasoning_effort=args.reasoning_effort)
     if chat_mode:
-        return chat(profile, initial_prompt=prompt, json_output=args.json, **options)
+        return chat(profile, initial_prompt=prompt, json_output=args.json, profile_name=profile_name, **options)
     text, data = ask(profile, prompt, **options)
     print(json.dumps(data, ensure_ascii=False) if args.json else text)
     return 0

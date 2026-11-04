@@ -15,7 +15,11 @@ RESPONSE = {"choices": [{"message": {"content": "answer"}}]}
 
 
 class ChatTests(unittest.TestCase):
-    setUp = test_cli.AskAITests.setUp
+    def setUp(self):
+        test_cli.AskAITests.setUp(self)
+        self.naming = patch("ask_ai.chat.generate_title", return_value="测试会话")
+        self.naming.start()
+        self.addCleanup(self.naming.stop)
     cli = test_cli.AskAITests.cli
     add = test_cli.AskAITests.add
 
