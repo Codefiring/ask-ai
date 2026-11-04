@@ -7,6 +7,7 @@ import sys
 
 from . import __version__
 from .client import ask
+from .chat import chat
 from .reasoning import EFFORTS
 from .config import PRESETS, UserError, config_path, get_profile, load_config, save_config, validate_profile
 
@@ -136,7 +137,10 @@ def run(argv=None):
         for name, (protocol, root, env) in PRESETS.items():
             print(f"{name:12} {protocol:10} {root or '<自定义 API 根地址>'}  {env}")
         return 0
-    parser = argparse.ArgumentParser(prog="ask-ai", description='一次配置，直接提问：ask-ai "what is pingpang"', epilog="配置：ask-ai config | 管理：ask-ai config --help | 服务列表：ask-ai providers")
+    chat_mode = bool(argv and argv[0] == "chat")
+    if chat_mode:
+        argv.pop(0)
+    parser = argparse.ArgumentParser(prog="ask-ai chat" if chat_mode else "ask-ai", description="终端多轮对话，/help 查看会话命令" if chat_mode else '一次配置，直接提问：ask-ai "what is pingpang"', epilog="聊天：ask-ai chat | 配置：ask-ai config | 管理：ask-ai config --help | 服务列表：ask-ai providers")
     parser.add_argument("prompt", nargs="*", help="问题；也可从标准输入读取")
     parser.add_argument("--version", action="version", version=f"ask-ai {__version__}")
     parser.add_argument("-p", "--profile", help="本次使用的配置名称")
@@ -152,17 +156,20 @@ def run(argv=None):
     parser.add_argument("--json", action="store_true", help="输出 API 原始 JSON 响应")
     args = parser.parse_args(argv)
     prompt = " ".join(args.prompt).strip()
-    if not sys.stdin.isatty():
+    if not chat_mode and not sys.stdin.isatty():
         context = sys.stdin.read().strip()
         if context:
             prompt = f"{prompt}\n\n{context}" if prompt else context
-    if not prompt:
+    if not prompt and not chat_mode:
         parser.print_help()
         return 0
     profile = get_profile(load_config(), args.profile)
     if args.model is not None:
         profile["model"] = args.model
-    text, data = ask(profile, prompt, timeout=args.timeout, system=args.system, max_tokens=args.max_tokens, temperature=args.temperature, reasoning_effort=args.reasoning_effort)
+    options = dict(timeout=args.timeout, system=args.system, max_tokens=args.max_tokens, temperature=args.temperature, reasoning_effort=args.reasoning_effort)
+    if chat_mode:
+        return chat(profile, initial_prompt=prompt, json_output=args.json, **options)
+    text, data = ask(profile, prompt, **options)
     print(json.dumps(data, ensure_ascii=False) if args.json else text)
     return 0
 

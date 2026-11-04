@@ -6,10 +6,46 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 requests = []
+
+
+def check_terminal(command, env, cwd):
+    """Exercise readline and prompts against a real pseudo-terminal on POSIX."""
+    import pty
+    import select
+
+    master, slave = pty.openpty()
+    process = None
+    try:
+        process = subprocess.Popen([command, "chat", "-p", "vllm"], stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env)
+
+        def expect(marker):
+            output = b""
+            deadline = time.monotonic() + 10
+            while marker.encode() not in output:
+                remaining = deadline - time.monotonic()
+                assert remaining > 0, output.decode(errors="replace")
+                ready, _, _ = select.select([master], [], [], remaining)
+                assert ready, output.decode(errors="replace")
+                output += os.read(master, 65536)
+
+        expect("你> ")
+        os.write(master, b"first\n")
+        expect("你> ")
+        os.write(master, b"followup\n")
+        expect("你> ")
+        os.write(master, b"/exit\n")
+        assert process.wait(timeout=10) == 0
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+        os.close(master)
+        os.close(slave)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -78,7 +114,18 @@ def main():
             assert "chat_template_kwargs" not in requests[-1][1]
             run("-p", "vllm", "summarize", stdin="some context")
             assert requests[-1][1]["messages"][-1]["content"] == "summarize\n\nsome context"
-            print("HTTP smoke passed: CLI, persisted profiles, 3 protocols, reasoning controls, pipeline input")
+            for provider in ("vllm", "anthropic", "gemini"):
+                start = len(requests)
+                run("chat", "-p", provider, stdin="first\nfollowup\n/clear\nfresh\n/exit\n")
+                conversation = requests[start:]
+                field = "contents" if provider == "gemini" else "messages"
+                assert [len(item[1][field]) for item in conversation] == [1, 3, 1]
+                assert conversation[1][1][field][1]["role"] == ("model" if provider == "gemini" else "assistant")
+            if os.name == "posix":
+                start = len(requests)
+                check_terminal(command, env, temporary)
+                assert [len(item[1]["messages"]) for item in requests[start:]] == [1, 3]
+            print("HTTP smoke passed: CLI, profiles, 3 protocols, reasoning, pipelines, multi-turn chat, clear and terminal")
     finally:
         server.shutdown()
         server.server_close()

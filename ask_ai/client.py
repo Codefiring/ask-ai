@@ -1,5 +1,6 @@
 """HTTP adapters for OpenAI compatible, Anthropic and Gemini APIs."""
 import json
+from copy import deepcopy
 import socket
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -16,7 +17,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def make_request(profile, prompt, system=None, max_tokens=None, temperature=None, reasoning_effort="none"):
+def make_request(profile, prompt, system=None, max_tokens=None, temperature=None, reasoning_effort="none", history=None):
     validate_profile(profile)
     protocol = PRESETS[profile["provider"]][0]
     root = profile["base_url"].rstrip("/")
@@ -24,12 +25,22 @@ def make_request(profile, prompt, system=None, max_tokens=None, temperature=None
     headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": f"ask-ai/{__version__}"}
     model = profile["model"]
     system = profile.get("system", "") if system is None else system
+    turns = []
+    for turn in history or []:
+        native = turn.get("_native", {}).get(protocol)
+        if native is not None:
+            turns.append(deepcopy(native))
+        elif protocol == "gemini":
+            turns.append({"role": "model" if turn["role"] == "assistant" else "user", "parts": [{"text": turn["content"]}]})
+        else:
+            turns.append({"role": turn["role"], "content": turn["content"]})
+    turns.append({"role": "user", "parts": [{"text": prompt}]} if protocol == "gemini" else {"role": "user", "content": prompt})
     if protocol == "anthropic":
         url = root + "/messages"
         headers["anthropic-version"] = "2023-06-01"
         if key:
             headers["x-api-key"] = key
-        body = {"model": model, "max_tokens": max_tokens or 4096, "messages": [{"role": "user", "content": prompt}]}
+        body = {"model": model, "max_tokens": max_tokens or 4096, "messages": turns}
         if system:
             body["system"] = system
         if temperature is not None:
@@ -38,7 +49,7 @@ def make_request(profile, prompt, system=None, max_tokens=None, temperature=None
         url = root + "/models/" + quote(model.removeprefix("models/"), safe="") + ":generateContent"
         if key:
             headers["x-goog-api-key"] = key
-        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        body = {"contents": turns}
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
         generation = {}
@@ -53,7 +64,7 @@ def make_request(profile, prompt, system=None, max_tokens=None, temperature=None
         if key:
             headers["Authorization"] = "Bearer " + key
         messages = ([{"role": "system", "content": system}] if system else [])
-        messages.append({"role": "user", "content": prompt})
+        messages.extend(turns)
         body = {"model": model, "messages": messages, "stream": False}
         if max_tokens is not None:
             body["max_completion_tokens" if profile["provider"] == "openai" else "max_tokens"] = max_tokens
@@ -100,3 +111,18 @@ def ask(profile, prompt, timeout=120, **options):
     except (ValueError, UnicodeError) as exc:
         raise UserError("API 返回的内容不是有效 JSON，请检查 API 根地址。") from exc
     return extract_text(data, protocol), data
+
+
+def assistant_turn(profile, text, data):
+    """Keep provider reasoning blocks/signatures intact for the next turn."""
+    protocol = PRESETS[profile["provider"]][0]
+    if protocol == "anthropic":
+        native = {"role": "assistant", "content": data["content"]}
+    elif protocol == "gemini":
+        native = {"role": "model", "parts": data["candidates"][0]["content"]["parts"]}
+    else:
+        message = data["choices"][0]["message"]
+        native = {"role": "assistant", "content": message.get("content") or text}
+        if "reasoning_content" in message:
+            native["reasoning_content"] = message["reasoning_content"]
+    return {"role": "assistant", "content": text, "_native": {protocol: deepcopy(native)}}
